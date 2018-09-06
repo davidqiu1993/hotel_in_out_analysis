@@ -40,7 +40,7 @@ def load_dataset(verbose=False):
 
     if verbose:
       print('Processed %s lines.' % (len(dataset)))
-
+  
   # construct date time dataset
   dts = []
   for i in range(len(dataset)):
@@ -54,6 +54,9 @@ def load_dataset(verbose=False):
         break
     if not valid:
       continue
+
+    # extract hotel name
+    hotel_name = d[2]
 
     # parse booking date time
     dt_booking = datetime.datetime.strptime(d[5] + ' ' + d[6], '%m/%d/%y %H:%M:%S')
@@ -71,7 +74,7 @@ def load_dataset(verbose=False):
     dt_pm_checkout = datetime.datetime.strptime(d[10] + ' ' + d[11], '%m/%d/%y %H:%M:%S')
 
     # add to list
-    dts.append((dt_booking, dt_guest_checkin, dt_pm_checkin, dt_guest_checkout, dt_pm_checkout))
+    dts.append((dt_booking, dt_guest_checkin, dt_pm_checkin, dt_guest_checkout, dt_pm_checkout, hotel_name))
 
   # convert dataset format
   # - [0] booking: date, time (not quite relevant)
@@ -79,31 +82,54 @@ def load_dataset(verbose=False):
   # - [2] pm_checkin: date, time
   # - [3] guest_checkout: date (since no one knows when the guest left exactly)
   # - [4] pm_checkout: date, time
+  # - [5] hotel_name
   T = np.array(dts)
 
   return T
 
 
-def calculate_checkin_hours_samples(T, range_checkin_hours):
+def calculate_checkin_hours_samples(T, range_checkin_hours, with_hotel=False):
   vec_checkin_hours = T[:,2] - T[:,1] + datetime.timedelta(0, 3600 * 12)
   checkin_hours = []
+  hotel_names = []
   for i in range(len(vec_checkin_hours)):
     sample = vec_checkin_hours[i].total_seconds() / (3600)
     if 0 <= sample and sample < range_checkin_hours:
       checkin_hours.append(sample)
+      hotel_names.append(T[i][5])
+
+  if with_hotel:
+    return checkin_hours, hotel_names
 
   return checkin_hours
 
 
-def calculate_checkout_hours_samples(T, range_checkout_hours):
+def calculate_checkout_hours_samples(T, range_checkout_hours, with_hotel=False):
   vec_checkout_hours = T[:,4] - T[:,3] + datetime.timedelta(0, 3600 * 12)
   checkout_hours = []
+  hotel_names = []
   for i in range(len(vec_checkout_hours)):
     sample = vec_checkout_hours[i].total_seconds() / (3600)
     if 0 <= sample and sample < range_checkout_hours:
       checkout_hours.append(sample)
+      hotel_names.append(T[i][5])
+
+  if with_hotel:
+    return checkout_hours, hotel_names
 
   return checkout_hours
+
+
+def cluster_by_hotel_names(samples, hotel_names):
+  assert(len(samples) == len(hotel_names))
+
+  clusters = {}
+  for i in range(len(samples)):
+    if hotel_names[i] not in clusters:
+      clusters[hotel_names[i]] = []
+    clusters[hotel_names[i]].append(samples[i])
+
+  return clusters
 
 
 def analyze_checkin_hours(T, draw=False, density=False, alpha=1.0, verbose=False):
@@ -296,6 +322,98 @@ def model_checkout_hours(T, draw=False, verbose=False):
   return mu_G, sigma_G
 
 
+def calculate_checkin_threshold(T, draw=False, verbose=False):
+  mu, sigma = model_checkin_hours(T, draw=False, verbose=False)
+
+  samples, hotel_names = calculate_checkin_hours_samples(T, 48, with_hotel=True)
+  clusters = cluster_by_hotel_names(samples, hotel_names)
+
+  # calculate average score
+  X = samples
+  Y = (stats.norm.pdf(X, mu[0], sigma[0]) + stats.norm.pdf(X, mu[1], sigma[1])) / 2
+
+  Y_log = np.log(Y)
+  y_ave = np.exp(np.mean(Y_log))
+
+  if verbose:
+    print('y_ave: %f' % (y_ave))
+
+  # calculate individual scores
+  checkin_scores = {}
+  checkin_scores_norm = {}
+  for hotel_name in clusters:
+    cluster = clusters[hotel_name]
+    X = cluster
+    Y = (stats.norm.pdf(X, mu[0], sigma[0]) + stats.norm.pdf(X, mu[1], sigma[1])) / 2
+
+    Y_log = np.log(Y)
+    score_ave = np.exp(np.mean(Y_log))
+
+    checkin_scores[hotel_name] = score_ave
+    checkin_scores_norm[hotel_name] = score_ave/y_ave
+
+    if verbose:
+      print('%s: %f (%f)' % (hotel_name, score_ave, score_ave/y_ave))
+
+  if draw:
+    list_hotel_names = []
+    list_scores = []
+    for hotel_name in checkin_scores_norm:
+      list_hotel_names.append(hotel_name)
+      list_scores.append(checkin_scores_norm[hotel_name])
+    indices = [i for i in range(len(checkin_scores_norm))]
+    plt.bar(indices, list_scores)
+    plt.axhline(1.0, color='black', linestyle='dashed', linewidth=1)
+
+  return checkin_scores
+
+
+def calculate_checkout_threshold(T, draw=False, verbose=False):
+  mu, sigma = model_checkout_hours(T, draw=False, verbose=False)
+
+  samples, hotel_names = calculate_checkout_hours_samples(T, 48, with_hotel=True)
+  clusters = cluster_by_hotel_names(samples, hotel_names)
+
+  # calculate average score
+  X = samples
+  Y = stats.norm.pdf(X, mu, sigma)
+
+  Y_log = np.log(Y)
+  y_ave = np.exp(np.mean(Y_log))
+
+  if verbose:
+    print('y_ave: %f' % (y_ave))
+
+  # calculate individual scores
+  checkout_scores = {}
+  checkout_scores_norm = {}
+  for hotel_name in clusters:
+    cluster = clusters[hotel_name]
+    X = cluster
+    Y = stats.norm.pdf(X, mu, sigma)
+
+    Y_log = np.log(Y)
+    score_ave = np.exp(np.mean(Y_log))
+
+    checkout_scores[hotel_name] = score_ave
+    checkout_scores_norm[hotel_name] = score_ave/y_ave
+
+    if verbose:
+      print('%s: %f (%f)' % (hotel_name, score_ave, score_ave/y_ave))
+
+  if draw:
+    list_hotel_names = []
+    list_scores = []
+    for hotel_name in checkout_scores_norm:
+      list_hotel_names.append(hotel_name)
+      list_scores.append(checkout_scores_norm[hotel_name])
+    indices = [i for i in range(len(checkout_scores_norm))]
+    plt.bar(indices, list_scores)
+    plt.axhline(1.0, color='black', linestyle='dashed', linewidth=1)
+
+  return checkout_scores
+
+
 def main():
   # load dataset
   # - [0] booking: date, time (not quite relevant)
@@ -325,7 +443,7 @@ def main():
     print('')
 
   # model checkin hours
-  if True:
+  if False:
     print('model: checkin hours')
     model_checkin_hours(T, draw=True, verbose=True)
     print('')
@@ -334,6 +452,18 @@ def main():
   if False:
     print('model: checkout hours')
     model_checkout_hours(T, draw=True, verbose=True)
+    print('')
+
+  # calculate checkin threshold
+  if False:
+    print('calculate: checkin threshold')
+    calculate_checkin_threshold(T, draw=True, verbose=True)
+    print('')
+
+  # calculate checkout threshold
+  if True:
+    print('calculate: checkout threshold')
+    calculate_checkout_threshold(T, draw=True, verbose=True)
     print('')
 
   # show drawings
