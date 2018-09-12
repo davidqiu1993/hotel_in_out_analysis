@@ -5,7 +5,13 @@ Modelling Probability Distribution of Hotel Check-in and Check-out Activities.
 Reference:
 
 ```
-to be added.
+@article{qiu2018hotel,
+  title={Modelling Probability Distribution of Hotel Check-in and Check-out Activities},
+  author={Qiu, Dicong},
+  journal={Preprint},
+  year={2018},
+  month={sep}
+}
 ```
 
 
